@@ -4,6 +4,7 @@ import time
 import math
 import os
 from core.arduino_controller import enviar_comando
+from core.database import obter_ou_criar_jogador, salvar_partida_space_invaders
 
 # --- CONFIGURAÇÕES E CONSTANTES (SEM NÚMEROS MÁGICOS) ---
 TELEPORT_CHANCE = 0.50
@@ -39,7 +40,7 @@ SPRITES = {}
 
 def carregar_sprites():
     """Carrega e redimensiona os sprites da pasta 'sprites'."""
-    pasta_sprites = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sprites')
+    pasta_sprites = os.path.join(os.path.dirname(__file__), 'sprites')
     
     tamanhos = {
         'nave': (48, 48),
@@ -193,7 +194,7 @@ def criar_onda_inicial(colunas_x):
 
     return onda
 
-def rodar_jogo(tela, relogio, arduino, ler_hardware):
+def rodar_jogo(tela, relogio, arduino, ler_hardware, nome_jogador="Anônimo"):
     carregar_sprites()
 
     LARGURA, ALTURA = 800, 600
@@ -251,6 +252,9 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
     tempo_ultimo_tiro = 0.0
     INTERVALO_TIRO = 0.18
     tempo_anterior_frame = time.time()
+    tempo_inicio_partida = time.time()
+
+    btn_tiro_solto_game_over = False
 
     while rodando:
         agora = time.time()
@@ -263,8 +267,8 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
             elif evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE:
                     rodando = False
-                elif game_over and (evento.key == pygame.K_SPACE or evento.key == pygame.K_RETURN):
-                    return rodar_jogo(tela, relogio, arduino, ler_hardware)
+                elif game_over and (agora - tempo_game_over >= 1.5) and (evento.key == pygame.K_SPACE or evento.key == pygame.K_RETURN):
+                    return rodar_jogo(tela, relogio, arduino, ler_hardware, nome_jogador)
 
         # Lê entradas do Hardware / Teclado
         joy_x, joy_y, btn_menu, btn_tiro = ler_hardware(arduino)
@@ -280,6 +284,10 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
         if game_over:
             tela.fill((15, 10, 20))
+
+            # Se o botão de tiro foi solto pelo menos uma vez durante a tela de Game Over
+            if btn_tiro == 1:
+                btn_tiro_solto_game_over = True
 
             # Conta o tempo restante do cooldown
             decorrido_go = agora - tempo_game_over
@@ -309,12 +317,19 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
             txt_cd = fonte_sub.render(f"Voltando ao menu em {cooldown_restante:.1f}s...", True, (200, 140, 140))
             tela.blit(txt_cd, (LARGURA // 2 - txt_cd.get_width() // 2, bar_go_y + 26))
 
-            txt_reinicio = fonte_sub.render("Pressione Botão de Tiro para jogar novamente", True, (160, 170, 190))
+            # Bloqueia reinício prematuro durante os primeiros 1.5s
+            lockout_ativo = (decorrido_go < 1.5)
+            if lockout_ativo:
+                txt_reinicio = fonte_sub.render("Aguarde...", True, (120, 130, 150))
+            else:
+                txt_reinicio = fonte_sub.render("Pressione Botão de Tiro para jogar novamente", True, (160, 170, 190))
+            
             tela.blit(txt_reinicio, (LARGURA // 2 - txt_reinicio.get_width() // 2, 380))
 
-            if btn_tiro == 0:
+            # Reinicia apenas se tiver passado 1.5s, o botão foi solto e pressionado novamente
+            if not lockout_ativo and btn_tiro_solto_game_over and btn_tiro == 0:
                 pygame.time.wait(300)
-                return rodar_jogo(tela, relogio, arduino, ler_hardware)
+                return rodar_jogo(tela, relogio, arduino, ler_hardware, nome_jogador)
 
             pygame.display.flip()
             relogio.tick(60)
@@ -328,6 +343,13 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                 game_over = True
                 tempo_game_over = agora  # Registra o momento exato do game over
                 enviar_comando(arduino, 'M')
+
+                # Salva a pontuação no banco de dados SQLite
+                if nome_jogador:
+                    jogador_id = obter_ou_criar_jogador(nome_jogador)
+                    if jogador_id:
+                        tempo_total = agora - tempo_inicio_partida
+                        salvar_partida_space_invaders(jogador_id, pontuacao, tempo_total)
 
         # --- TRANSIÇÃO E SPAWN DO JOGO NORMAL ---
         if fase_jogo == "ONDA_INICIAL":
