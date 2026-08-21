@@ -22,7 +22,7 @@ CHARGED_BUFF_DURATION = 3.5
 BONUS_DURATION = 8.0
 BONUS_DROP_CHANCE = 0.05 # Drop raro de item bonus.png (5%)
 
-MAX_INIMIGOS_TELA = 17 # LIMITE MÁXIMO ABSOLUTO DE INIMIGOS NA TELA (MÁX 25 POR VEZ)
+MAX_INIMIGOS_TELA = 15 # Limite de horda reduzido (máx 15 por vez)
 
 # SISTEMA DE RARIDADE DE MOBS (SUBCHEFE CREEPER MAIS RARO = PESO 6)
 MOB_RARITY = {
@@ -202,6 +202,18 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
     COLUNAS_X = [100, 250, 400, 550, 700]
 
+    # CRIANTE DO FUNDO ESTELAR RETRO (ESTRELAS EM CAMADAS COM PARALAXE)
+    estrelas = [
+        {
+            "x": random.randint(0, LARGURA),
+            "y": random.randint(0, ALTURA),
+            "vel": random.uniform(0.3, 1.8),
+            "tam": random.choice([1, 1, 2, 2, 3]),
+            "cor": random.choice([(255, 255, 255), (180, 200, 255), (255, 220, 180), (120, 140, 180)])
+        }
+        for _ in range(80)
+    ]
+
     # FLUXO DA PARTIDA: ONDA INICIAL DE APRESENTAÇÃO -> JOGO NORMAL
     fase_jogo = "ONDA_INICIAL"
     aliens = criar_onda_inicial(COLUNAS_X)
@@ -225,6 +237,7 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
     boss_primeiro_spawnou = False
     boss_ativo = False
+    boss_aura_ativo = False # AURA DO BOSS: Ativa enquanto o Boss Malware estiver em campo
 
     fonte_hud = pygame.font.SysFont('Consolas', 18, bold=True)
     fonte_sub = pygame.font.SysFont('Consolas', 14)
@@ -233,6 +246,8 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
     rodando = True
     game_over = False
+    tempo_game_over = 0.0  # Momento em que o game over ocorreu (para cooldown de 5s)
+    COOLDOWN_GAME_OVER = 5.0  # Segundos antes de redirecionar ao menu
     tempo_ultimo_tiro = 0.0
     INTERVALO_TIRO = 0.18
     tempo_anterior_frame = time.time()
@@ -265,14 +280,37 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
         if game_over:
             tela.fill((15, 10, 20))
-            txt_go = fonte_gameover.render("GAME OVER - TEMPO ESGOTADO!", True, (231, 76, 60))
-            tela.blit(txt_go, (LARGURA // 2 - txt_go.get_width() // 2, 200))
+
+            # Conta o tempo restante do cooldown
+            decorrido_go = agora - tempo_game_over
+            cooldown_restante = max(0.0, COOLDOWN_GAME_OVER - decorrido_go)
+
+            # Se o cooldown expirou, volta ao menu automaticamente
+            if cooldown_restante <= 0:
+                rodando = False
+                break
+
+            # --- TELA DE GAME OVER ---
+            txt_go = fonte_gameover.render("GAME OVER", True, (231, 76, 60))
+            tela.blit(txt_go, (LARGURA // 2 - txt_go.get_width() // 2, 170))
 
             txt_pts = fonte_hud.render(f"PONTUAÇÃO FINAL: {pontuacao:04d}  |  ABATES: {total_inimigos_derrotados}", True, (255, 255, 255))
-            tela.blit(txt_pts, (LARGURA // 2 - txt_pts.get_width() // 2, 270))
+            tela.blit(txt_pts, (LARGURA // 2 - txt_pts.get_width() // 2, 240))
 
-            txt_reinicio = fonte_sub.render("Pressione Botão de Tiro para Reiniciar | Clique do Joystick para Voltar ao Menu", True, (160, 170, 190))
-            tela.blit(txt_reinicio, (LARGURA // 2 - txt_reinicio.get_width() // 2, 360))
+            # BARRA DE COOLDOWN (conta regressiva visual)
+            bar_go_w = 340
+            bar_go_x = LARGURA // 2 - bar_go_w // 2
+            bar_go_y = 310
+            pct_cd = cooldown_restante / COOLDOWN_GAME_OVER
+            pygame.draw.rect(tela, (40, 20, 20), (bar_go_x, bar_go_y, bar_go_w, 16), border_radius=8)
+            pygame.draw.rect(tela, (231, 76, 60), (bar_go_x, bar_go_y, int(bar_go_w * pct_cd), 16), border_radius=8)
+            pygame.draw.rect(tela, (180, 60, 60), (bar_go_x, bar_go_y, bar_go_w, 16), width=2, border_radius=8)
+
+            txt_cd = fonte_sub.render(f"Voltando ao menu em {cooldown_restante:.1f}s...", True, (200, 140, 140))
+            tela.blit(txt_cd, (LARGURA // 2 - txt_cd.get_width() // 2, bar_go_y + 26))
+
+            txt_reinicio = fonte_sub.render("Pressione Botão de Tiro para jogar novamente", True, (160, 170, 190))
+            tela.blit(txt_reinicio, (LARGURA // 2 - txt_reinicio.get_width() // 2, 380))
 
             if btn_tiro == 0:
                 pygame.time.wait(300)
@@ -286,8 +324,10 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
         tempo_restante -= dt
         if tempo_restante <= 0:
             tempo_restante = 0
-            game_over = True
-            enviar_comando(arduino, 'M')
+            if not game_over:
+                game_over = True
+                tempo_game_over = agora  # Registra o momento exato do game over
+                enviar_comando(arduino, 'M')
 
         # --- TRANSIÇÃO E SPAWN DO JOGO NORMAL ---
         if fase_jogo == "ONDA_INICIAL":
@@ -301,16 +341,21 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                     "criado": agora
                 })
         else:
-            # LIMITE MÁXIMO ABSOLUTO DE 25 INIMIGOS POR VEZ NA TELA
-            num_inimigos_desejado = min(MAX_INIMIGOS_TELA, 3 + (pontuacao // 100))
+            # HORDA MODERADA (MÁXIMO DE 15 INIMIGOS SIMULTÂNEOS NA TELA)
+            num_inimigos_desejado = min(MAX_INIMIGOS_TELA, 3 + (pontuacao // 150))
 
-            while len(aliens) < num_inimigos_desejado:
+            # AURA DO BOSS: Quando ativo, duplica a horda de inimigos invocados!
+            mult_horda = 2 if boss_aura_ativo else 1
+            num_horda_com_aura = min(MAX_INIMIGOS_TELA, num_inimigos_desejado * mult_horda)
+
+            while len(aliens) < num_horda_com_aura:
                 if (not boss_primeiro_spawnou) and (pontuacao >= BOSS_FIRST_SPAWN_SCORE):
                     boss_primeiro_spawnou = True
                     boss_ativo = True
+                    boss_aura_ativo = True
                     aliens.append(novo_boss_malware(COLUNAS_X))
                     popups.append({
-                        "texto": "⚠️ BOSS MALWARE DETECTADO! ⚠️",
+                        "texto": "☠ BOSS MALWARE DETECTADO! HORDA INVOCADA! ☠",
                         "cor": (231, 76, 60),
                         "x": LARGURA // 2,
                         "y": 180,
@@ -319,9 +364,10 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
                 elif (boss_primeiro_spawnou) and (not boss_ativo) and (pontuacao >= BOSS_FIRST_SPAWN_SCORE) and (random.random() < BOSS_SPAWN_CHANCE):
                     boss_ativo = True
+                    boss_aura_ativo = True
                     aliens.append(novo_boss_malware(COLUNAS_X))
                     popups.append({
-                        "texto": "⚠️ BOSS MALWARE SURGIU! ⚠️",
+                        "texto": "☠ BOSS MALWARE SURGIU! ☠",
                         "cor": (231, 76, 60),
                         "x": LARGURA // 2,
                         "y": 180,
@@ -409,6 +455,8 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                 a['y'] += vel_atual * 0.85
                 a['x'] = a['x_base'] + math.sin(a['y'] * 0.08) * 15.0
             elif a['tipo'] == 'boss_malware':
+                # BOSS FLUTUA NO TOPO: Movimentação lateral + dash, mas NUNCA desce da zona segura
+                BOSS_Y_LIMITE = 220.0  # Limite inferior: boss não passa desta linha
                 a['dash_timer'] -= dt
                 if a['dash_timer'] <= 0:
                     a['em_dash'] = True
@@ -416,30 +464,34 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                         a['em_dash'] = False
                         a['dash_timer'] = random.uniform(2.5, 4.0)
 
-                mult_boss_dash = 2.2 if a['em_dash'] else 0.6
-                a['y'] += vel_atual * mult_boss_dash
-                a['x'] = a['x_base'] + math.sin(a['y'] * 0.03) * 85.0
+                # Movimento vertical suave (oscila ao redor de y=80-120)
+                a['y'] = 80.0 + math.sin(agora * 0.8 + a['x_base'] * 0.01) * 40.0
+                a['x'] = a['x_base'] + math.sin(agora * 1.1) * 180.0
+                # Garante que nunca ultrapasse o limite inferior
+                if a['y'] > BOSS_Y_LIMITE:
+                    a['y'] = BOSS_Y_LIMITE
             else:
                 a['y'] += vel_atual
                 a['x'] = a['x_base']
 
             # CASO O INIMIGO PASSE PELA BORDA DE BAIXO
-            if a['y'] > ALTURA - 75:
-                if a['tipo'] == 'boss_malware':
-                    tempo_restante = tempo_restante / BOSS_TIME_DIVISOR_ON_ESCAPE
-                    boss_ativo = False
-                    popups.append({"texto": "⚠️ BOSS ESCAPOU! TEMPO / 1.6 ⚠️", "cor": (231, 76, 60), "x": LARGURA // 2, "y": 180, "criado": agora})
+            # BOSS MALWARE NUNCA ESCAPA: Fica preso acima (movimento controlado acima)
+            if a['y'] > ALTURA - 75 and a['tipo'] != 'boss_malware':
+                dano = MOB_RARITY.get(a['tipo'], {}).get('dano_fuga', 5.0)
+                # AURA DO BOSS: Inimigos comuns causam o DOBRO DO DANO de fuga!
+                if boss_aura_ativo:
+                    dano *= 2.0
+                    popups.append({"texto": f"☠ AURA! -{int(dano)}s", "cor": (231, 76, 60), "x": a['x'], "y": ALTURA - 90, "criado": agora})
                 else:
-                    dano = MOB_RARITY.get(a['tipo'], {}).get('dano_fuga', 5.0)
-                    tempo_restante -= dano
                     popups.append({"texto": f"-{int(dano)}s", "cor": (231, 76, 60), "x": a['x'], "y": ALTURA - 90, "criado": agora})
+                tempo_restante -= dano
 
                 if a in aliens:
                     aliens.remove(a)
                     if fase_jogo == "JOGO_NORMAL":
                         aliens.append(novo_inimigo(COLUNAS_X, pontuacao=pontuacao))
 
-            # COLISÃO E PROCESSAMENTO DE DANO (COM DANO EM ÁREA CORRIGIDO)
+            # COLISÃO E PROCESSAMENTO DE DANO
             ax, ay = a['x'], a['y']
             w, h = a['largura'], a['altura']
             
@@ -501,23 +553,24 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                             efeitos_raio.append({"x": ax, "y": ay, "criado": agora})
                             popups.append({"texto": "⚡ SURTO CHARGED!", "cor": (230, 126, 34), "x": ax, "y": ay - 20, "criado": agora})
 
-                        # SUBCHEFE CREEPER VERDE DERROTADO: +30s LOOT + EXPLODE TODOS OS INIMIGOS DA TELA!
+                        # SUBCHEFE CREEPER VERDE DERROTADO: +30s LOOT + EXPLODE TODOS OS INIMIGOS (EXCETO BOSS MALWARE!)
                         if a['tipo'] == 'verde':
                             tempo_restante += 30.0
                             enviar_comando(arduino, 'E')
                             popups.append({"texto": "+30s LOOT & BOMBA TOTAL!", "cor": (46, 204, 113), "x": ax, "y": ay - 30, "criado": agora})
 
-                            # EXPLODE TODOS OS DEMAIS INIMIGOS NA TELA!
+                            # EXPLODE INIMIGOS COMUNS (EXCETO O BOSS MALWARE!)
                             for outro in aliens[:]:
-                                if outro != a:
+                                if outro != a and outro['tipo'] != 'boss_malware':
                                     explosoes.append({"x": outro['x'], "y": outro['y'], "criado": agora, "tamanho": 110})
                                     if outro in aliens:
                                         aliens.remove(outro)
 
-                        # BOSS MALWARE DERROTADO: Multiplicar tempo atual por 1.25 + Bomba de área gigante
+                        # BOSS MALWARE DERROTADO: Multiplicar tempo atual por 1.25 + Aura desativada + Bomba de área gigante
                         elif a['tipo'] == 'boss_malware':
                             tempo_restante = tempo_restante * BOSS_TIME_MULTIPLIER_ON_DEFEAT
                             boss_ativo = False
+                            boss_aura_ativo = False  # AURA ENCERRADA ao derrotar o Boss
                             enviar_comando(arduino, 'E')
 
                             popups.append({"texto": "★ BOSS DERROTADO! TEMPO x 1.25 ★", "cor": (241, 196, 15), "x": LARGURA // 2, "y": 180, "criado": agora})
@@ -539,20 +592,14 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
         # DESENHO NA TELA
         tela.fill((10, 12, 22))
 
-        # Estrelas no fundo
-        for i in range(25):
-            sx = (i * 137) % LARGURA
-            sy = (i * 211 + int(agora * 15)) % ALTURA
-            pygame.draw.circle(tela, (70, 80, 100), (sx, sy), 1)
+        # FUNDO ESTELAR RETRO DINÂMICO (COM PARALAXE E DIVERSAS CORES DE ESTRELAS)
+        for est in estrelas:
+            est['y'] = (est['y'] + est['vel']) % ALTURA
+            pygame.draw.circle(tela, est['cor'], (int(est['x']), int(est['y'])), est['tam'])
 
-        # Linhas guia das 5 Colunas
+        # Linhas guia suaves das 5 Colunas
         for cx in COLUNAS_X:
-            pygame.draw.line(tela, (20, 26, 40), (cx, 50), (cx, ALTURA - 70), 1)
-
-        # BORDA BRANCA LIMITE PARA MOVIMENTAÇÃO DO PERSONAGEM
-        pygame.draw.rect(tela, (255, 255, 255), (30, ALTURA - 75, LARGURA - 60, 52), width=2, border_radius=6)
-        pygame.draw.circle(tela, (255, 255, 255), (30, ALTURA - 75), 4)
-        pygame.draw.circle(tela, (255, 255, 255), (LARGURA - 30, ALTURA - 75), 4)
+            pygame.draw.line(tela, (25, 30, 48), (cx, 50), (cx, ALTURA - 20), 1)
 
         # NAVE DO JOGADOR
         px = jogador_x
@@ -594,6 +641,16 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
                 # Desenha Boss Malware (20 HP) ou Subchefe Creeper (5 HP)
                 if a['tipo'] in ['boss_malware', 'verde']:
                     sp_key = 'enemy-boss-malware' if a['tipo'] == 'boss_malware' else 'enemy-verde'
+
+                    # EFEITO AURA DO BOSS: Pulso vermelho brilhante ao redor do sprite
+                    if a['tipo'] == 'boss_malware' and boss_aura_ativo:
+                        pulso = int(20 + 15 * math.sin(agora * 6.0))
+                        aura_surf = pygame.Surface((a['largura'] + pulso*2, a['altura'] + pulso*2), pygame.SRCALPHA)
+                        aura_surf.fill((0, 0, 0, 0))
+                        pygame.draw.ellipse(aura_surf, (200, 30, 30, 90), (0, 0, a['largura'] + pulso*2, a['altura'] + pulso*2))
+                        pygame.draw.ellipse(aura_surf, (255, 80, 0, 50), (pulso//2, pulso//2, a['largura'] + pulso, a['altura'] + pulso))
+                        tela.blit(aura_surf, (ax - a['largura']//2 - pulso, ay - pulso))
+
                     if SPRITES.get(sp_key):
                         tela.blit(SPRITES[sp_key], (ax - a['largura']//2, ay))
                     else:
@@ -692,7 +749,7 @@ def rodar_jogo(tela, relogio, arduino, ler_hardware):
 
         # RODAPÉ DE INSTRUÇÕES
         txt_fase = f"FASE: {fase_jogo}"
-        txt_dica = fonte_sub.render(f"{txt_fase} | Creeper Subchefe Raro (Explode Todos) | Limite Máx 25 Inimigos", True, (140, 150, 170))
+        txt_dica = fonte_sub.render(f"{txt_fase} | Fundo Estelar Retro | Creeper não afeta Malware | Horda Máx 15", True, (140, 150, 170))
         tela.blit(txt_dica, (LARGURA // 2 - txt_dica.get_width() // 2, ALTURA - 20))
 
         pygame.display.flip()
